@@ -62,7 +62,24 @@ class RoboVacMQTTEntity(StateVacuumEntity):
             | VacuumEntityFeature.FAN_SPEED
             | VacuumEntityFeature.RETURN_HOME
             | VacuumEntityFeature.SEND_COMMAND
+            | VacuumEntityFeature.LOCATE
         )
+        
+        # Room name to ID mapping - customize these based on your home
+        self._room_map = {
+            "kitchen": 1,
+            "hallway": 2,
+            "living room": 3,
+        }
+        
+        # Available cleaning modes
+        self._clean_modes = [
+            "SWEEP_ONLY",
+            "MOP_ONLY",
+            "SWEEP_AND_MOP",
+            "SWEEP_THEN_MOP",
+        ]
+        self._current_clean_mode = "SWEEP_AND_MOP"
 
         def _threadsafe_update():
             self.hass.loop.call_soon_threadsafe(
@@ -99,6 +116,9 @@ class RoboVacMQTTEntity(StateVacuumEntity):
             #"battery_level": self._attr_battery_level,
             "fan_speed": self._attr_fan_speed,
             "status": self._state,
+            "clean_mode": self._current_clean_mode,
+            "available_clean_modes": self._clean_modes,
+            "room_map": self._room_map,
         }
 
     async def pushed_update_handler(self):
@@ -144,9 +164,33 @@ class RoboVacMQTTEntity(StateVacuumEntity):
         enum_value = next(x for x in EUFY_CLEAN_CLEAN_SPEED if x.value == fan_speed)
         await self.vacuum.set_clean_speed(enum_value)
 
+    async def async_locate(self, **kwargs):
+        """Make the vacuum play a sound to locate it."""
+        await self.vacuum.find_robot()
+
+    def _resolve_room_ids(self, rooms: list) -> list[int]:
+        """Convert room names to IDs. Accepts both names and IDs."""
+        resolved = []
+        for room in rooms:
+            if isinstance(room, int):
+                resolved.append(room)
+            elif isinstance(room, str):
+                room_lower = room.lower().strip()
+                if room_lower.isdigit():
+                    resolved.append(int(room_lower))
+                elif room_lower in self._room_map:
+                    resolved.append(self._room_map[room_lower])
+                else:
+                    raise ValueError(
+                        f"Unknown room: '{room}'. Available rooms: {list(self._room_map.keys())}"
+                    )
+            else:
+                raise ValueError(f"Invalid room type: {type(room)}")
+        return resolved
+
     async def async_send_command(
         self,
-        command: Literal['scene_clean', 'room_clean','set_clean_param'],
+        command: Literal['scene_clean', 'room_clean', 'set_clean_param', 'set_clean_mode', 'clean_rooms_by_name'],
         params: dict | list | None = None,
         **kwargs,
     ) -> None:
@@ -161,6 +205,29 @@ class RoboVacMQTTEntity(StateVacuumEntity):
             rooms = [int(r) for r in params['rooms']]
             map_id = int(params.get("map_id", 0))
             await self.vacuum.room_clean(rooms, map_id)
+        elif command == "clean_rooms_by_name":
+            # Clean specific rooms by name (e.g., "Kitchen", "Living Room")
+            if not params or not isinstance(params, dict) or not isinstance(params.get("rooms"), list):
+                raise ValueError(
+                    "params[rooms] is required for clean_rooms_by_name command. "
+                    "Example: {'rooms': ['Kitchen', 'Living Room']}"
+                )
+            room_ids = self._resolve_room_ids(params['rooms'])
+            map_id = int(params.get("map_id", 3))
+            await self.vacuum.room_clean(room_ids, map_id)
+        elif command == "set_clean_mode":
+            # Set cleaning mode: SWEEP_ONLY, MOP_ONLY, SWEEP_AND_MOP, SWEEP_THEN_MOP
+            if not params or not isinstance(params, dict) or "mode" not in params:
+                raise ValueError(
+                    f"params[mode] is required. Available modes: {self._clean_modes}"
+                )
+            mode = params["mode"].upper()
+            if mode not in self._clean_modes:
+                raise ValueError(
+                    f"Invalid mode: '{mode}'. Available modes: {self._clean_modes}"
+                )
+            self._current_clean_mode = mode
+            await self.vacuum.set_clean_param({"clean_type": mode})
         elif command == "set_clean_param":
             # Allow full flexible param dict — multiple nested keys supported
             # Needs to be hardened before merging back | For testing purposes only

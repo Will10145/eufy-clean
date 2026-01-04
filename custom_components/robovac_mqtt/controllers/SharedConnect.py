@@ -307,6 +307,10 @@ class SharedConnect(Base):
         value = encode(StationRequest, {'manual_cmd': {'go_collect_dust': True}})
         return await self.send_command({self.dps_map['GO_HOME']: value})
 
+    async def find_robot(self):
+        """Make the robot beep/flash to help locate it."""
+        return await self.send_command({self.dps_map['FIND_ROBOT']: True})
+
     async def spot_clean(self):
         value = encode(ModeCtrlRequest, {'method': EUFY_CLEAN_CONTROL.START_SPOT_CLEAN})
         return await self.send_command({self.dps_map['PLAY_PAUSE']: value})
